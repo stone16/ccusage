@@ -2,6 +2,9 @@
 
 ccusage supports several environment variables for configuration and customization. Environment variables provide a way to configure ccusage without modifying command-line arguments or configuration files.
 
+When `CODEX_HOME` is unset, Codex reports also discover Orca account and runtime homes.
+`ORCA_USER_DATA_PATH` adds a custom Orca data directory; see [Codex data discovery](./codex/index.md).
+
 ## Agent Data Directories
 
 ccusage detects supported data source files from conventional locations by default. Set these variables when your data lives somewhere else. Directory variables can be one directory or a comma-separated list of directories; `COPILOT_HOME` and `GROK_HOME` accept a single root, while `COPILOT_OTEL_FILE_EXPORTER_PATH` points at one explicit JSONL export file:

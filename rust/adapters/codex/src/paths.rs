@@ -244,7 +244,52 @@ pub(super) fn codex_home_paths() -> Result<Vec<PathBuf>> {
     }
 
     let home = home::home_dir().ok_or_else(|| cli_error("home directory is not set"))?;
-    Ok(vec![home.join(".codex")])
+    let mut paths = vec![home.join(".codex")];
+    let mut seen = paths.iter().cloned().collect::<FxHashSet<_>>();
+
+    for data_dir in orca_data_dirs(&home) {
+        let runtime_home = data_dir.join("codex-runtime-home/home");
+        for path in discover_orca_codex_homes(&data_dir.join("codex-accounts"))
+            .into_iter()
+            .chain(std::iter::once(runtime_home).filter(|path| has_codex_sessions(path)))
+        {
+            if seen.insert(path.clone()) {
+                paths.push(path);
+            }
+        }
+    }
+
+    Ok(paths)
+}
+
+fn orca_data_dirs(home: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(path) = env::var("ORCA_USER_DATA_PATH")
+        && !path.trim().is_empty()
+    {
+        dirs.push(PathBuf::from(path));
+    }
+    dirs.push(home.join("Library/Application Support/orca"));
+    dirs.push(home.join(".local/share/orca"));
+    dirs.push(home.join("AppData/Roaming/orca"));
+    dirs
+}
+
+fn discover_orca_codex_homes(accounts_dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(accounts_dir) else {
+        return Vec::new();
+    };
+    let mut paths = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path().join("home"))
+        .filter(|path| has_codex_sessions(path))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+}
+
+fn has_codex_sessions(path: &Path) -> bool {
+    path.join("sessions").is_dir() || path.join("archived_sessions").is_dir()
 }
 
 #[cfg(test)]
@@ -309,6 +354,20 @@ mod tests {
         let paths = codex_usage_paths_from_homes(vec![home.clone()]);
 
         assert_eq!(paths, vec![home]);
+    }
+
+    #[test]
+    fn discovers_orca_managed_codex_homes() {
+        let fixture = Fixture::new();
+        let accounts = fixture.create_dir_all("orca/codex-accounts");
+        let first = fixture.create_dir_all("orca/codex-accounts/first/home");
+        let second = fixture.create_dir_all("orca/codex-accounts/second/home");
+        let _ = fixture.create_dir_all("orca/codex-accounts/first/home/sessions");
+        let _ = fixture.create_dir_all("orca/codex-accounts/second/home/archived_sessions");
+        let _ = fixture.create_dir_all("orca/codex-accounts/not-an-account");
+        let _ = fixture.create_dir_all("orca/codex-accounts/unused/home");
+
+        assert_eq!(discover_orca_codex_homes(&accounts), vec![first, second]);
     }
 
     #[test]

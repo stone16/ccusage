@@ -25,6 +25,12 @@ Most users can start with unified reports such as `ccusage daily`. Add the `code
 
 The CLI reads Codex session JSONL files, both plain `.jsonl` and Zstandard-compressed `.jsonl.zst`, located under `CODEX_HOME` (defaults to `~/.codex`). `CODEX_HOME` can be one directory or a comma-separated list of directories. For each entry, ccusage discovers `sessions/` and `archived_sessions/` independently, so an entry with only `archived_sessions/` still contributes archived Codex logs. When neither directory exists, the entry is read directly as a JSONL directory, which lets saved `codex exec --json` output live beside normal Codex homes. Compression does not change a session ID. Within one directory, when a plain and a compressed copy of the same rollout both exist, the plain copy is read and the compressed one is skipped, matching Codex. If the same relative rollout path exists in both `sessions/` and `archived_sessions/` for one Codex home, the active `sessions/` copy wins regardless of encoding, so archived copies are not double counted.
 
+When `CODEX_HOME` is unset, ccusage also discovers Orca's `codex-accounts/*/home`
+and `codex-runtime-home/home` beneath `~/Library/Application Support/orca`,
+`~/.local/share/orca`, `~/AppData/Roaming/orca`, and `ORCA_USER_DATA_PATH` when set.
+Only homes containing `sessions/` or `archived_sessions/` are included. Setting
+`CODEX_HOME` explicitly disables this automatic discovery.
+
 ```bash
 CODEX_HOME="$HOME/.codex,$HOME/.codex-work,$HOME/codex-exec-logs" ccusage codex daily
 ```

@@ -994,6 +994,7 @@ fn isolated_agent_env(
     let mut vars = [
         "CLAUDE_CONFIG_DIR",
         "CODEX_HOME",
+        "ORCA_USER_DATA_PATH",
         "OPENCODE_DATA_DIR",
         "AMP_DATA_DIR",
         "DROID_SESSIONS_DIR",

@@ -24,6 +24,7 @@ Anything that is not specific to this source belongs in `ccusage-core` or
 - `~/.codex/sessions/**/*.jsonl.zst`
 - `~/.codex/archived_sessions/**/*.jsonl`
 - `~/.codex/archived_sessions/**/*.jsonl.zst`
+- Orca-managed account and runtime homes (see [`src/README.md`](src/README.md) for discovery paths)
 
 Record shapes, token mapping, and cost rules are documented in [`src/README.md`](src/README.md).
 

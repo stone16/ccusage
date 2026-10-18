@@ -118,6 +118,108 @@ fn reports_compressed_codex_rollouts_alongside_plain_ones() {
     assert_eq!(session["totalTokens"], 325);
 }
 
+#[test]
+fn discovers_orca_accounts_and_runtime_home() {
+    let fixture = orca_fixture();
+    for report_kind in ["daily", "session"] {
+        let output = cli_command(&fixture, &["codex", report_kind, "--json"])
+            .env_remove("CODEX_HOME")
+            .env("ORCA_USER_DATA_PATH", fixture.path("orca"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["totals"]["totalTokens"], 1200);
+    }
+}
+
+#[test]
+fn discovers_default_orca_locations_without_double_counting() {
+    for location in [
+        "Library/Application Support/orca",
+        ".local/share/orca",
+        "AppData/Roaming/orca",
+    ] {
+        let fixture = codex_fixture();
+        let data = format!("empty-home/{location}");
+        for relative in [
+            "codex-accounts/first/home/sessions/shared.jsonl",
+            "codex-runtime-home/home/sessions/shared.jsonl",
+        ] {
+            let _ = fixture.write_file(
+                format!("{data}/{relative}"),
+                usage("2026-09-19T08:00:00.000Z", 100, 50),
+            );
+        }
+        let output = cli_command(&fixture, &["codex", "daily", "--json"])
+            .env_remove("CODEX_HOME")
+            .env("USERPROFILE", fixture.path("empty-home"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["totals"]["totalTokens"], 150, "{location}");
+    }
+}
+
+#[test]
+fn explicit_codex_home_excludes_orca() {
+    let fixture = orca_fixture();
+    let output = cli_command(&fixture, &["codex", "daily", "--json"])
+        .env("ORCA_USER_DATA_PATH", fixture.path("orca"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["totals"]["totalTokens"], 1150);
+}
+
+fn orca_fixture() -> Fixture {
+    let fixture = codex_fixture();
+    for (path, timestamp, input) in [
+        (
+            "empty-home/.codex/sessions/default.jsonl",
+            "2026-09-19T08:00:00.000Z",
+            100,
+        ),
+        (
+            "orca/codex-accounts/first/home/sessions/first.jsonl",
+            "2026-09-20T08:00:00.000Z",
+            200,
+        ),
+        (
+            "orca/codex-accounts/second/home/archived_sessions/second.jsonl",
+            "2026-09-21T08:00:00.000Z",
+            300,
+        ),
+        (
+            "orca/codex-runtime-home/home/sessions/runtime.jsonl",
+            "2026-09-22T08:00:00.000Z",
+            400,
+        ),
+        (
+            "orca/codex-accounts/unused/home/unrelated.jsonl",
+            "2026-09-23T08:00:00.000Z",
+            900,
+        ),
+    ] {
+        let _ = fixture.write_file(path, usage(timestamp, input, 50));
+    }
+    fixture
+}
+
 fn codex_fixture() -> Fixture {
     fs_fixture!({
         "codex/sessions/2026/09/19/rollout-2026-09-19T23-22-40-01a0bb8c-c7c0-7630-9d82-860b875930f0.jsonl": usage("2026-09-19T23:22:40.000Z", 100, 50),
@@ -157,7 +259,14 @@ fn run_cli(fixture: &Fixture, args: &[&str]) -> String {
 }
 
 fn run_cli_output(fixture: &Fixture, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_ccusage"))
+    cli_command(fixture, args)
+        .output()
+        .expect("ccusage CLI should run")
+}
+
+fn cli_command(fixture: &Fixture, args: &[&str]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ccusage"));
+    command
         .args(args)
         .args(["--offline", "--no-color", "--timezone", "UTC"])
         .env("CODEX_HOME", fixture.path("codex"))
@@ -168,6 +277,6 @@ fn run_cli_output(fixture: &Fixture, args: &[&str]) -> Output {
         .env("NO_COLOR", "1")
         .env("COLUMNS", "240")
         .env_remove("CLAUDE_CONFIG_DIR")
-        .output()
-        .expect("ccusage CLI should run")
+        .env_remove("ORCA_USER_DATA_PATH");
+    command
 }

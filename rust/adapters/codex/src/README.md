@@ -7,6 +7,12 @@ ${CODEX_HOME:-~/.codex}/sessions/
 ${CODEX_HOME:-~/.codex}/archived_sessions/
 ```
 
+When `CODEX_HOME` is unset, ccusage also discovers Orca's `codex-accounts/*/home`
+and `codex-runtime-home/home` beneath `~/Library/Application Support/orca`,
+`~/.local/share/orca`, `~/AppData/Roaming/orca`, and `ORCA_USER_DATA_PATH` when set.
+Only homes containing `sessions/` or `archived_sessions/` are included. Setting
+`CODEX_HOME` explicitly disables this automatic discovery.
+
 Rollouts are plain `.jsonl` or Zstandard-compressed `.jsonl.zst`. Compression does not
 change the session ID. When both encodings of a rollout exist in one directory, the
 plain copy wins, as it does in Codex. When both directories contain the same relative

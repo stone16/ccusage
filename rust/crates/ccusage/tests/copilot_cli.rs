@@ -97,6 +97,7 @@ fn run_cli<const N: usize>(fixture: &Fixture, args: [&str; N]) -> String {
         .env("COLUMNS", "120")
         .env_remove("CLAUDE_CONFIG_DIR")
         .env_remove("CODEX_HOME")
+        .env_remove("ORCA_USER_DATA_PATH")
         .env_remove("OPENCODE_DATA_DIR")
         .env_remove("AMP_DATA_DIR")
         .env_remove("DROID_SESSIONS_DIR")
