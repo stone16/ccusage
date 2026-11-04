@@ -23,6 +23,7 @@ skills below and loads when the task triggers them.
 - `create-pr` - branch through merged PR: pushing, AI review requests, review-thread replies, CI.
 - `fix-ci` - failing GitHub Actions checks.
 - `stometa-mode` - delegated, reviewed, live-verified work style. Use when the user asks for `/stometa-mode` or Stometa's style.
+- `verify-ccusage` - isolated CLI proof for the ccusage binary. Use when proving daily, weekly, session, date-filter, or Claude-only reports.
 
 ## Repository Shape
 
