@@ -22,6 +22,8 @@ skills below and loads when the task triggers them.
 - `commit` - atomic Conventional Commits and patch-based staging.
 - `create-pr` - branch through merged PR: pushing, AI review requests, review-thread replies, CI.
 - `fix-ci` - failing GitHub Actions checks.
+- `stometa-mode` - delegated, reviewed, live-verified work style. Use when the user asks for `/stometa-mode` or Stometa's style.
+- `verify-ccusage` - isolated CLI proof for the ccusage binary. Use when proving daily, weekly, session, date-filter, or Claude-only reports.
 
 ## Repository Shape
 
@@ -53,3 +55,7 @@ Read the nearest `AGENTS.md` before editing:
   `git commit --amend` unless the user asks for an amend.
 - Work happens inside the pinned Nix dev shell: run `direnv allow` when first initializing this
   environment, and prefix one-offs with `direnv exec .` from outside it.
+
+## Stometa / verification
+
+User-facing changes: follow the repo skill `stometa-mode` (Self-prove). Before claiming done, drive affected features with the repo `verify-*` skill.
