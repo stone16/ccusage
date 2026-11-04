@@ -55,3 +55,7 @@ Read the nearest `AGENTS.md` before editing:
   `git commit --amend` unless the user asks for an amend.
 - Work happens inside the pinned Nix dev shell: run `direnv allow` when first initializing this
   environment, and prefix one-offs with `direnv exec .` from outside it.
+
+## Stometa / verification
+
+User-facing changes: follow the repo skill `stometa-mode` (Self-prove). Before claiming done, drive affected features with the repo `verify-*` skill.
