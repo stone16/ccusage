@@ -22,6 +22,7 @@ skills below and loads when the task triggers them.
 - `commit` - atomic Conventional Commits and patch-based staging.
 - `create-pr` - branch through merged PR: pushing, AI review requests, review-thread replies, CI.
 - `fix-ci` - failing GitHub Actions checks.
+- `stometa-mode` - delegated, reviewed, live-verified work style. Use when the user asks for `/stometa-mode` or Stometa's style.
 
 ## Repository Shape
 
