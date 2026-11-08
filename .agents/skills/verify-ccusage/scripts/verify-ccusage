@@ -1,0 +1,417 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TMUX=(tmux -f /exec-daemon/tmux.portal.conf)
+POINTER=/tmp/ccusage-verify-current
+
+die() {
+  printf 'verify-ccusage: %s\n' "$*" >&2
+  exit 1
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+repo_root() {
+  local script
+  script=$(readlink -f "$0")
+  cd "$(dirname "$script")/../../../.." && pwd
+}
+
+resolve_run_id() {
+  if [[ -n "${CCUSAGE_VERIFY_RUN_ID:-}" ]]; then
+    printf '%s\n' "$CCUSAGE_VERIFY_RUN_ID"
+    return
+  fi
+  [[ -f $POINTER ]] || die "CCUSAGE_VERIFY_RUN_ID is unset and $POINTER is missing; run launch first"
+  tr -d '[:space:]' <"$POINTER"
+}
+
+load_run() {
+  RUN_ID=$(resolve_run_id)
+  [[ "$RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || die "unsafe run id: $RUN_ID"
+  REPO=$(repo_root)
+  SCRATCH=/tmp/ccusage-verify-$RUN_ID
+  HOME_DIR=$SCRATCH/home
+  CLAUDE_DIR=$SCRATCH/claude
+  EVIDENCE=/tmp/ccusage-verify-evidence/$RUN_ID
+  SESSION=ccusage-verify-$RUN_ID
+  BINARY=$REPO/rust/target/debug/ccusage
+  SEED=$CLAUDE_DIR/projects/project1/session1/chat.jsonl
+}
+
+write_seed() {
+  mkdir -p "$(dirname "$SEED")" "$HOME_DIR/.config" "$HOME_DIR/.local/share" "$EVIDENCE"
+  cat >"$SEED" <<'EOF'
+{"timestamp":"2025-01-10T10:00:00.000Z","message":{"id":"msg_123","model":"claude-opus-4-6","usage":{"input_tokens":100,"output_tokens":250,"cache_creation_input_tokens":10,"cache_read_input_tokens":5,"speed":"standard"}},"requestId":"req_456","costUSD":0.01}
+EOF
+}
+
+ensure_pricing() {
+  if [[ -n ${CCUSAGE_PRICING_JSON_PATH:-} && -f ${CCUSAGE_PRICING_JSON_PATH} ]]; then
+    return
+  fi
+  local dest=/tmp/ccusage-litellm-pricing.json owner repo rev url
+  if [[ ! -s $dest ]]; then
+    owner=$(jq -r '.nodes.litellm.locked.owner' "$REPO/flake.lock")
+    repo=$(jq -r '.nodes.litellm.locked.repo' "$REPO/flake.lock")
+    rev=$(jq -r '.nodes.litellm.locked.rev' "$REPO/flake.lock")
+    url="https://raw.githubusercontent.com/${owner}/${repo}/${rev}/model_prices_and_context_window.json"
+    curl -fsSL --retry 3 --max-time 180 -o "$dest.partial" "$url"
+    mv "$dest.partial" "$dest"
+  fi
+  export CCUSAGE_PRICING_JSON_PATH=$dest
+}
+
+write_state() {
+  cat >"$EVIDENCE/run.env" <<EOF
+RUN_ID=$RUN_ID
+REPO=$REPO
+SCRATCH=$SCRATCH
+HOME_DIR=$HOME_DIR
+CLAUDE_DIR=$CLAUDE_DIR
+EVIDENCE=$EVIDENCE
+SESSION=$SESSION
+BINARY=$BINARY
+SEED=$SEED
+EOF
+  printf '%s\n' "$RUN_ID" >"$POINTER"
+}
+
+cmd_launch() {
+  need cargo
+  need jq
+  need tmux
+  need unshare
+  if [[ -z ${CCUSAGE_VERIFY_RUN_ID:-} ]]; then
+    CCUSAGE_VERIFY_RUN_ID=verify-$(date +%Y%m%d%H%M%S)-$$
+    export CCUSAGE_VERIFY_RUN_ID
+  fi
+  load_run
+  write_seed
+  ensure_pricing
+  if [[ ! -x $BINARY ]]; then
+    cargo build --manifest-path "$REPO/rust/Cargo.toml" --bin ccusage -j 2
+  fi
+  [[ -x $BINARY ]] || die "build did not produce $BINARY"
+  write_state
+  local version
+  version=$("$BINARY" --version)
+  printf 'CCUSAGE_VERIFY_RUN_ID=%s\n' "$RUN_ID" | tee "$EVIDENCE/launch.txt"
+  printf '%s\n' "ready $version" | tee -a "$EVIDENCE/launch.txt"
+}
+
+cmd_doctor() {
+  need jq
+  need tmux
+  need unshare
+  load_run
+  local report=$EVIDENCE/doctor.txt
+  mkdir -p "$EVIDENCE"
+  {
+    printf 'run_id=%s\n' "$RUN_ID"
+    printf 'binary=%s\n' "$BINARY"
+    if [[ ! -x $BINARY ]]; then
+      printf 'binary_executable=no\n'
+      printf 'doctor=fail\n'
+      exit 1
+    fi
+    printf 'binary_executable=yes\n'
+    local actual expected
+    actual=$("$BINARY" --version)
+    expected=$(jq -r '.version' "$REPO/package.json")
+    printf 'version=%s\n' "$actual"
+    printf 'package_json=%s\n' "$expected"
+    [[ "$actual" == "ccusage $expected" ]] || {
+      printf 'version_match=no\n'
+      printf 'doctor=fail\n'
+      exit 1
+    }
+    printf 'version_match=yes\n'
+    [[ -f $SEED ]] || {
+      printf 'seed=missing\n'
+      printf 'doctor=fail\n'
+      exit 1
+    }
+    local seed_real scratch_real
+    seed_real=$(readlink -f "$SEED")
+    scratch_real=$(readlink -f "$SCRATCH")
+    printf 'seed=%s\n' "$seed_real"
+    [[ "$seed_real" == "$scratch_real/"* ]] || {
+      printf 'seed_inside_scratch=no\n'
+      printf 'doctor=fail\n'
+      exit 1
+    }
+    printf 'seed_inside_scratch=yes\n'
+    [[ -d $CLAUDE_DIR/projects ]] || {
+      printf 'claude_projects=missing\n'
+      printf 'doctor=fail\n'
+      exit 1
+    }
+    printf 'claude_config_dir=%s\n' "$CLAUDE_DIR"
+    printf 'home=%s\n' "$HOME_DIR"
+    printf 'evidence=%s\n' "$EVIDENCE"
+    printf 'tmux_session=%s\n' "$SESSION"
+    if "${TMUX[@]}" has-session -t "=$SESSION" 2>/dev/null; then
+      printf 'tmux_session_present=yes\n'
+    else
+      printf 'tmux_session_present=no\n'
+    fi
+    printf 'port=none\n'
+    printf 'auth=none\n'
+    printf 'doctor=ok\n'
+  } | tee "$report"
+}
+
+ensure_session() {
+  if ! "${TMUX[@]}" has-session -t "=$SESSION" 2>/dev/null; then
+    "${TMUX[@]}" new-session -d -s "$SESSION" -x 200 -y 50
+    "${TMUX[@]}" set-option -t "$SESSION" history-limit 8000
+    sleep 0.2
+  fi
+}
+
+run_report() {
+  local name=$1
+  shift
+  local runner=$SCRATCH/run-$name.sh
+  local argv
+  argv=$(printf '%q ' "$@")
+  printf '%s\n' "$*" >"$EVIDENCE/$name.argv"
+  cat >"$runner" <<EOF
+#!/bin/bash
+set -u
+printf '%s\n' "command: $argv"
+/usr/bin/unshare -r -n /usr/bin/env -i \
+  PATH=/usr/bin:/bin \
+  HOME=$HOME_DIR \
+  XDG_CONFIG_HOME=$HOME_DIR/.config \
+  XDG_DATA_HOME=$HOME_DIR/.local/share \
+  CLAUDE_CONFIG_DIR=$CLAUDE_DIR \
+  TZ=UTC \
+  NO_COLOR=1 \
+  TERM=xterm-256color \
+  $BINARY $argv >"$EVIDENCE/$name.stdout" 2>"$EVIDENCE/$name.stderr"
+status=\$?
+printf 'EXIT:%s\n' "\$status" | tee "$EVIDENCE/$name.exit"
+printf '%s\n' '----- stdout -----'
+cat "$EVIDENCE/$name.stdout"
+printf '%s\n' '----- stderr -----'
+cat "$EVIDENCE/$name.stderr"
+printf 'done\n' >"$EVIDENCE/$name.done"
+EOF
+  chmod +x "$runner"
+  rm -f "$EVIDENCE/$name.done"
+  ensure_session
+  "${TMUX[@]}" send-keys -t "$SESSION:0.0" "bash '$runner'" C-m
+  local i
+  for i in $(seq 1 90); do
+    [[ -f $EVIDENCE/$name.done ]] && break
+    sleep 1
+  done
+  "${TMUX[@]}" capture-pane -t "$SESSION:0.0" -p -S -4000 >"$EVIDENCE/$name.pane.txt"
+  [[ -f $EVIDENCE/$name.done ]] || die "$name timed out; pane is $EVIDENCE/$name.pane.txt"
+  local status
+  status=$(sed -n 's/^EXIT://p' "$EVIDENCE/$name.exit" | tail -n 1)
+  [[ "$status" == 0 ]] || die "$name exited $status; see $EVIDENCE/$name.stderr and $EVIDENCE/$name.pane.txt"
+}
+
+assert_jq() {
+  local file=$1
+  local filter=$2
+  jq -e "$filter" "$file" >/dev/null || die "jq assertion failed for $file: $filter"
+}
+
+assert_grep() {
+  local file=$1
+  local text=$2
+  grep -F -q -- "$text" "$file" || die "missing '$text' in $file"
+}
+
+all_daily_filter='
+  (.daily | length) == 1
+  and .daily[0].period == "2025-01-10"
+  and .daily[0].agent == "all"
+  and .daily[0].metadata.agents == ["claude"]
+  and .daily[0].inputTokens == 100
+  and .daily[0].outputTokens == 250
+  and .daily[0].cacheCreationTokens == 10
+  and .daily[0].cacheReadTokens == 5
+  and .daily[0].totalTokens == 365
+  and .daily[0].modelsUsed == ["claude-opus-4-6"]
+  and ((.daily[0].totalCost - 0.01) | fabs) < 0.000000001
+  and .totals.inputTokens == 100
+  and .totals.outputTokens == 250
+  and .totals.totalTokens == 365
+'
+
+claude_daily_filter='
+  (.daily | length) == 1
+  and .daily[0].date == "2025-01-10"
+  and (.daily[0].agent | not)
+  and .daily[0].inputTokens == 100
+  and .daily[0].outputTokens == 250
+  and .daily[0].cacheCreationTokens == 10
+  and .daily[0].cacheReadTokens == 5
+  and .daily[0].totalTokens == 365
+  and .daily[0].modelsUsed == ["claude-opus-4-6"]
+  and ((.daily[0].totalCost - 0.01) | fabs) < 0.000000001
+  and .totals.inputTokens == 100
+  and .totals.totalTokens == 365
+'
+
+cmd_daily() {
+  cmd_doctor >/dev/null
+  run_report daily-table daily --offline --mode display --timezone UTC --no-color
+  run_report daily-json daily --json --offline --mode display --timezone UTC --no-color
+  run_report bare-json --json --offline --mode display --timezone UTC --no-color
+  assert_grep "$EVIDENCE/daily-table.stdout" "Coding (Agent) CLI Usage Report - Daily"
+  assert_grep "$EVIDENCE/daily-table.pane.txt" "Coding (Agent) CLI Usage Report - Daily"
+  assert_grep "$EVIDENCE/daily-table.stdout" "2025-01-10"
+  assert_grep "$EVIDENCE/daily-table.stdout" "opus-4-6"
+  assert_jq "$EVIDENCE/daily-json.stdout" "$all_daily_filter"
+  assert_jq "$EVIDENCE/bare-json.stdout" "$all_daily_filter"
+  cmp -s "$EVIDENCE/daily-json.stdout" "$EVIDENCE/bare-json.stdout" \
+    || die "ccusage --json and ccusage daily --json differ"
+  printf 'daily=ok evidence=%s\n' "$EVIDENCE"
+}
+
+cmd_claude_daily() {
+  cmd_doctor >/dev/null
+  run_report claude-daily-table claude daily --offline --mode display --timezone UTC --no-color
+  run_report claude-daily-json claude daily --json --offline --mode display --timezone UTC --no-color
+  assert_grep "$EVIDENCE/claude-daily-table.stdout" "Claude Code Token Usage Report - Daily"
+  assert_grep "$EVIDENCE/claude-daily-table.pane.txt" "Claude Code Token Usage Report - Daily"
+  assert_grep "$EVIDENCE/claude-daily-table.stdout" "2025-01-10"
+  assert_jq "$EVIDENCE/claude-daily-json.stdout" "$claude_daily_filter"
+  printf 'claude-daily=ok evidence=%s\n' "$EVIDENCE"
+}
+
+cmd_weekly() {
+  cmd_doctor >/dev/null
+  run_report weekly-json weekly --json --offline --mode display --timezone UTC --no-color
+  run_report weekly-table weekly --offline --mode display --timezone UTC --no-color
+  run_report claude-weekly-json claude weekly --json --offline --mode display --timezone UTC --no-color
+  run_report claude-weekly-table claude weekly --offline --mode display --timezone UTC --no-color
+  assert_jq "$EVIDENCE/weekly-json.stdout" '
+    (.weekly | length) == 1
+    and .weekly[0].period == "2025-01-06"
+    and .weekly[0].agent == "all"
+    and .weekly[0].inputTokens == 100
+    and .weekly[0].outputTokens == 250
+    and .weekly[0].totalTokens == 365
+    and ((.weekly[0].totalCost - 0.01) | fabs) < 0.000000001
+  '
+  assert_jq "$EVIDENCE/claude-weekly-json.stdout" '
+    (.weekly | length) == 1
+    and .weekly[0].week == "2025-01-05"
+    and .weekly[0].inputTokens == 100
+    and .weekly[0].outputTokens == 250
+    and .weekly[0].totalTokens == 365
+    and ((.weekly[0].totalCost - 0.01) | fabs) < 0.000000001
+  '
+  assert_grep "$EVIDENCE/weekly-table.stdout" "Coding (Agent) CLI Usage Report - Weekly"
+  assert_grep "$EVIDENCE/weekly-table.pane.txt" "Coding (Agent) CLI Usage Report - Weekly"
+  assert_grep "$EVIDENCE/weekly-table.stdout" "2025-01-06"
+  assert_grep "$EVIDENCE/claude-weekly-table.stdout" "Claude Code Token Usage Report - Weekly"
+  assert_grep "$EVIDENCE/claude-weekly-table.pane.txt" "Claude Code Token Usage Report - Weekly"
+  assert_grep "$EVIDENCE/claude-weekly-table.stdout" "2025-01-05"
+  printf 'weekly=ok evidence=%s\n' "$EVIDENCE"
+}
+
+cmd_session() {
+  cmd_doctor >/dev/null
+  run_report session-json session --json --offline --mode display --timezone UTC --no-color
+  run_report session-table session --offline --mode display --timezone UTC --no-color
+  run_report claude-session-json claude session --json --offline --mode display --timezone UTC --no-color
+  run_report claude-session-id-json claude session --id session1 --json --offline --mode display --timezone UTC --no-color
+  run_report claude-session-table claude session --offline --mode display --timezone UTC --no-color
+  assert_jq "$EVIDENCE/session-json.stdout" '
+    (.session | length) == 1
+    and .session[0].period == "session1"
+    and .session[0].agent == "claude"
+    and .session[0].metadata.lastActivity == "2025-01-10T10:00:00.000Z"
+    and .session[0].inputTokens == 100
+    and .session[0].outputTokens == 250
+    and .session[0].totalTokens == 365
+  '
+  assert_jq "$EVIDENCE/claude-session-json.stdout" '
+    (.sessions | length) == 1
+    and .sessions[0].sessionId == "session1"
+    and .sessions[0].projectPath == "project1"
+    and .sessions[0].lastActivity == "2025-01-10T10:00:00.000Z"
+    and .sessions[0].inputTokens == 100
+    and .sessions[0].outputTokens == 250
+    and .sessions[0].totalTokens == 365
+  '
+  assert_jq "$EVIDENCE/claude-session-id-json.stdout" '
+    .sessionId == "session1"
+    and (.entries | length) == 1
+    and .entries[0].model == "claude-opus-4-6"
+    and .entries[0].inputTokens == 100
+    and .entries[0].outputTokens == 250
+    and ((.entries[0].costUSD - 0.01) | fabs) < 0.000000001
+  '
+  assert_grep "$EVIDENCE/session-table.stdout" "Coding (Agent) CLI Usage Report - Session"
+  assert_grep "$EVIDENCE/session-table.pane.txt" "session1"
+  assert_grep "$EVIDENCE/claude-session-table.stdout" "Claude Code Token Usage Report - By Session"
+  assert_grep "$EVIDENCE/claude-session-table.pane.txt" "session1"
+  printf 'session=ok evidence=%s\n' "$EVIDENCE"
+}
+
+cmd_date_filter() {
+  cmd_doctor >/dev/null
+  run_report date-include daily --json --since 2025-01-10 --until 2025-01-10 --offline --mode display --timezone UTC --no-color
+  run_report date-exclude daily --json --since 2025-01-11 --offline --mode display --timezone UTC --no-color
+  run_report date-compact daily --json --since 20250110 --until 20250110 --offline --mode display --timezone UTC --no-color
+  assert_jq "$EVIDENCE/date-include.stdout" "$all_daily_filter"
+  assert_jq "$EVIDENCE/date-compact.stdout" "$all_daily_filter"
+  assert_jq "$EVIDENCE/date-exclude.stdout" '
+    (.daily | length) == 0
+    and .totals.inputTokens == 0
+    and .totals.totalTokens == 0
+  '
+  printf 'date-filter=ok evidence=%s\n' "$EVIDENCE"
+}
+
+cmd_cleanup() {
+  load_run
+  if "${TMUX[@]}" has-session -t "=$SESSION" 2>/dev/null; then
+    "${TMUX[@]}" kill-session -t "=$SESSION"
+  fi
+  if [[ -d $SCRATCH ]]; then
+    rm -rf "$SCRATCH"
+  fi
+  if [[ -f $POINTER ]] && [[ $(tr -d '[:space:]' <"$POINTER") == "$RUN_ID" ]]; then
+    rm -f "$POINTER"
+  fi
+  [[ -d $EVIDENCE ]] || die "evidence directory disappeared: $EVIDENCE"
+  printf 'cleaned scratch=%s evidence=%s\n' "$SCRATCH" "$EVIDENCE"
+}
+
+usage() {
+  cat <<'EOF'
+usage: verify-ccusage <launch|doctor|daily|claude-daily|weekly|session|date-filter|cleanup>
+
+Set CCUSAGE_VERIFY_RUN_ID before launch. Later commands reuse it, or the id
+written to /tmp/ccusage-verify-current by the latest launch.
+EOF
+}
+
+main() {
+  local cmd=${1:-}
+  case "$cmd" in
+    launch) cmd_launch ;;
+    doctor) cmd_doctor ;;
+    daily) cmd_daily ;;
+    claude-daily) cmd_claude_daily ;;
+    weekly) cmd_weekly ;;
+    session) cmd_session ;;
+    date-filter) cmd_date_filter ;;
+    cleanup) cmd_cleanup ;;
+    *) usage >&2; exit 2 ;;
+  esac
+}
+
+main "$@"
