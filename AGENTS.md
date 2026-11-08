@@ -59,3 +59,7 @@ Read the nearest `AGENTS.md` before editing:
 ## Stometa / verification
 
 User-facing changes: follow the repo skill `stometa-mode` (Self-prove). Before claiming done, drive affected features with the repo `verify-*` skill.
+
+## Development verification
+
+For development work, read `.agents/skills/stometa-mode/SKILL.md`. For changes to a user-facing journey, explicitly read the repository's applicable `verify-*` skill, even if that skill is configured for manual invocation. Use its isolated setup, run the applicable repository checks, and report evidence and untested paths.
